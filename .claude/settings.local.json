@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(mysql -uroot -p'Honven1223@' -h127.0.0.1 -P3306 accounting_db -e \"SHOW CREATE TABLE \\\\`user\\\\`\\\\G\")"
-    ]
-  }
-}
