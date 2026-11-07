@@ -14,10 +14,19 @@ spring:
     username: root
     # 数据库密码
     password: YOUR_DB_PASSWORD # 请填入本地数据库密码
+  # Redis 配置
+  data:
+    redis:
+      # Redis 地址
+      host: localhost
+      # Redis 端口
+      port: 6379
 
 # JWT 鉴权配置
 jwt:
   # 签名密钥，生产环境必须替换为足够长的随机字符串（HS256 至少 32 字节）
   secret: YOUR_JWT_SECRET_KEY # 请填入足够长的随机字符串
-  # 令牌有效期，单位毫秒，86400000 即 24 小时
-  expiration-ms: 86400000
+  # AccessToken 有效期，单位毫秒，1800000 即 30 分钟
+  access-expiration-ms: 1800000
+  # RefreshToken 有效期，单位毫秒，604800000 即 7 天
+  refresh-expiration-ms: 604800000

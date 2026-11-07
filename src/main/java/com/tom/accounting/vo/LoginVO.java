@@ -10,8 +10,11 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class LoginVO {
 
-    // JWT 令牌，前端后续请求需放在 Authorization 头中
-    private String token;
+    // 访问令牌，有效期 30 分钟，前端后续请求需放在 Authorization 头中
+    private String accessToken;
+
+    // 刷新令牌，有效期 7 天，仅用于调用刷新接口换取新的 AccessToken
+    private String refreshToken;
 
     // 用户昵称
     private String nickname;

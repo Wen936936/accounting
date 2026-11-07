@@ -1,6 +1,7 @@
 package com.tom.accounting.util;
 
 import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
@@ -10,43 +11,73 @@ import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
 
-// JWT 工具类，负责生成和解析令牌
+// JWT 工具类，负责生成和解析 AccessToken、RefreshToken
 @Component
 public class JwtUtil {
 
+    // 令牌类型：访问令牌，用于访问业务接口
+    public static final String TYPE_ACCESS = "access";
+    // 令牌类型：刷新令牌，仅用于换取新的 AccessToken
+    public static final String TYPE_REFRESH = "refresh";
+
     // claims 中存放用户 id 的键名
     private static final String CLAIM_USER_ID = "userId";
+    // claims 中存放令牌类型的键名
+    private static final String CLAIM_TYPE = "type";
 
     // HS256 签名密钥，由 application.yml 中的 jwt.secret 生成
     private final SecretKey secretKey;
-    // 令牌有效期（毫秒），由 jwt.expiration-ms 配置
-    private final long expirationMs;
+    // AccessToken 有效期（毫秒）
+    private final long accessExpirationMs;
+    // RefreshToken 有效期（毫秒）
+    private final long refreshExpirationMs;
 
     public JwtUtil(@Value("${jwt.secret}") String secret,
-                   @Value("${jwt.expiration-ms}") long expirationMs) {
+                   @Value("${jwt.access-expiration-ms}") long accessExpirationMs,
+                   @Value("${jwt.refresh-expiration-ms}") long refreshExpirationMs) {
         this.secretKey = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
-        this.expirationMs = expirationMs;
+        this.accessExpirationMs = accessExpirationMs;
+        this.refreshExpirationMs = refreshExpirationMs;
     }
 
-    // 生成令牌，写入用户 id、签发时间和过期时间
-    public String generateToken(Long userId) {
-        Date now = new Date();
-        return Jwts.builder()
-                .claim(CLAIM_USER_ID, userId)
-                .issuedAt(now)
-                .expiration(new Date(now.getTime() + expirationMs))
-                .signWith(secretKey)
-                .compact();
+    // 生成 AccessToken，type 为 access
+    public String generateAccessToken(Long userId) {
+        return generateToken(userId, TYPE_ACCESS, accessExpirationMs);
     }
 
-    // 解析令牌并取出用户 id，签名错误或已过期时抛出 JwtException
-    public Long parseUserId(String token) {
+    // 生成 RefreshToken，type 为 refresh
+    public String generateRefreshToken(Long userId) {
+        return generateToken(userId, TYPE_REFRESH, refreshExpirationMs);
+    }
+
+    // 获取 RefreshToken 有效期，用于设置 Redis 过期时间
+    public long getRefreshExpirationMs() {
+        return refreshExpirationMs;
+    }
+
+    // 解析令牌并取出用户 id，签名错误、已过期或类型不匹配时抛出 JwtException
+    public Long parseUserId(String token, String expectedType) {
         Claims claims = Jwts.parser()
                 .verifyWith(secretKey)
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();
+        if (!expectedType.equals(claims.get(CLAIM_TYPE))) {
+            throw new JwtException("令牌类型不正确");
+        }
         // JSON 数字可能被解析为 Integer 或 Long，统一转为 Long
         return ((Number) claims.get(CLAIM_USER_ID)).longValue();
+    }
+
+    // 生成令牌，写入用户 id、令牌类型、签发时间和过期时间
+    private String generateToken(Long userId, String type, long expirationMs) {
+        Date now = new Date();
+        return Jwts.builder()
+                .claim(CLAIM_USER_ID, userId)
+                .claim(CLAIM_TYPE, type)
+                .issuedAt(now)
+                .expiration(new Date(now.getTime() + expirationMs))
+                .signWith(secretKey)
+                .compact();
     }
 }
