@@ -2,30 +2,48 @@ package com.tom.accounting.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.tom.accounting.dto.LoginDTO;
+import com.tom.accounting.dto.LogoutDTO;
+import com.tom.accounting.dto.RefreshDTO;
 import com.tom.accounting.dto.RegisterDTO;
 import com.tom.accounting.entity.User;
 import com.tom.accounting.exception.BusinessException;
+import com.tom.accounting.exception.TokenException;
 import com.tom.accounting.mapper.UserMapper;
 import com.tom.accounting.service.UserService;
 import com.tom.accounting.util.JwtUtil;
-import com.tom.accounting.vo.AccessTokenVO;
 import com.tom.accounting.vo.LoginVO;
+import com.tom.accounting.vo.TokenVO;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.JwtException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.util.List;
 
 // 用户业务实现类
 @Service
 @RequiredArgsConstructor
 public class UserServiceImpl implements UserService {
 
-    // Redis 中保存 RefreshToken 的键前缀，完整键为 refresh_token:{userId}
+    // Redis 中保存 RefreshToken 的键前缀，完整键为 refresh_token:{userId}:{deviceType}
     private static final String REFRESH_TOKEN_KEY_PREFIX = "refresh_token:";
+    // Redis 中记录登录失败次数的键前缀，完整键为 login_fail:{username}
+    private static final String LOGIN_FAIL_KEY_PREFIX = "login_fail:";
+    private static final long MAX_LOGIN_FAIL_COUNT = 5;
+    private static final Duration LOGIN_LOCK_DURATION = Duration.ofMinutes(15);
+    private static final String ACCOUNT_LOCKED_MSG = "账号已锁定，请15分钟后再试";
+    // 原子轮换 RefreshToken：仅当 Redis 中的值等于旧令牌时，才覆盖为新令牌并重置 TTL
+    private static final DefaultRedisScript<Long> ROTATE_REFRESH_TOKEN_SCRIPT = new DefaultRedisScript<>("""
+            if redis.call('GET', KEYS[1]) == ARGV[1] then
+                redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])
+                return 1
+            end
+            return 0
+            """, Long.class);
 
     private final UserMapper userMapper;
     private final PasswordEncoder passwordEncoder;
@@ -51,49 +69,95 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public LoginVO login(LoginDTO loginDTO) {
+        String loginFailKey = LOGIN_FAIL_KEY_PREFIX + loginDTO.getUsername();
+        // 锁定期间即使密码正确也拒绝登录
+        if (isLoginLocked(loginFailKey)) {
+            throw new BusinessException(ACCOUNT_LOCKED_MSG);
+        }
+
         // 按用户名查询用户
         User user = userMapper.selectOne(
                 new LambdaQueryWrapper<User>().eq(User::getUsername, loginDTO.getUsername()));
-        // 用户不存在和密码错误使用同一提示，避免泄露账号是否存在
-        if (user == null || !passwordEncoder.matches(loginDTO.getPassword(), user.getPassword())) {
+        // 用户不存在时不累加失败次数，防止恶意锁定他人账号
+        if (user == null) {
+            throw new BusinessException("用户名或密码错误");
+        }
+        if (!passwordEncoder.matches(loginDTO.getPassword(), user.getPassword())) {
+            Long failCount = stringRedisTemplate.opsForValue().increment(loginFailKey);
+            stringRedisTemplate.expire(loginFailKey, LOGIN_LOCK_DURATION);
+            if (failCount >= MAX_LOGIN_FAIL_COUNT) {
+                throw new BusinessException(ACCOUNT_LOCKED_MSG);
+            }
             throw new BusinessException("用户名或密码错误");
         }
 
-        // 校验通过，签发双 Token，RefreshToken 存入 Redis 并设置与其有效期一致的过期时间
-        String accessToken = jwtUtil.generateAccessToken(user.getId());
-        String refreshToken = jwtUtil.generateRefreshToken(user.getId());
-        stringRedisTemplate.opsForValue().set(refreshTokenKey(user.getId()), refreshToken,
+        stringRedisTemplate.delete(loginFailKey);
+        TokenVO tokens = issueTokens(user.getId(), loginDTO.getDeviceType());
+        return new LoginVO(tokens.getAccessToken(), tokens.getRefreshToken(),
+                tokens.getExpiresIn(), user.getNickname());
+    }
+
+    @Override
+    public TokenVO refreshTokens(RefreshDTO refreshDTO) {
+        Long userId = parseRefreshUserId(refreshDTO.getRefreshToken());
+        // 防止已注销的用户继续通过旧令牌换取新令牌
+        if (userMapper.selectById(userId) == null) {
+            throw new TokenException("用户不存在，请重新登录");
+        }
+
+        String accessToken = jwtUtil.generateAccessToken(userId);
+        String newRefreshToken = jwtUtil.generateRefreshToken(userId);
+        // 校验旧令牌与覆盖新令牌在同一个 Lua 脚本中原子完成，防止并发重复刷新
+        Long rotated = stringRedisTemplate.execute(ROTATE_REFRESH_TOKEN_SCRIPT,
+                List.of(refreshTokenKey(userId, refreshDTO.getDeviceType())),
+                refreshDTO.getRefreshToken(), newRefreshToken,
+                String.valueOf(jwtUtil.getRefreshExpirationMs()));
+        if (!Long.valueOf(1L).equals(rotated)) {
+            throw new TokenException("RefreshToken无效，请重新登录");
+        }
+
+        return new TokenVO(accessToken, newRefreshToken, jwtUtil.getAccessExpirationMs() / 1000);
+    }
+
+    @Override
+    public void logout(LogoutDTO logoutDTO) {
+        Long userId = parseRefreshUserId(logoutDTO.getRefreshToken());
+        String key = refreshTokenKey(userId, logoutDTO.getDeviceType());
+        // 仅允许删除与当前 RefreshToken 一致的记录，历史废弃令牌不能踢下线当前会话
+        String storedRefreshToken = stringRedisTemplate.opsForValue().get(key);
+        if (!logoutDTO.getRefreshToken().equals(storedRefreshToken)) {
+            throw new TokenException("RefreshToken无效，请重新登录");
+        }
+        stringRedisTemplate.delete(key);
+    }
+
+    // 签发双 Token 并写入 RefreshToken，覆盖同设备的旧记录并重置 TTL
+    private TokenVO issueTokens(Long userId, String deviceType) {
+        String accessToken = jwtUtil.generateAccessToken(userId);
+        String refreshToken = jwtUtil.generateRefreshToken(userId);
+        stringRedisTemplate.opsForValue().set(refreshTokenKey(userId, deviceType), refreshToken,
                 Duration.ofMillis(jwtUtil.getRefreshExpirationMs()));
-        return new LoginVO(accessToken, refreshToken, user.getNickname());
+        return new TokenVO(accessToken, refreshToken, jwtUtil.getAccessExpirationMs() / 1000);
     }
 
-    @Override
-    public AccessTokenVO refreshAccessToken(String refreshToken) {
-        Long userId;
+    // 解析 RefreshToken 得到用户 id，过期或无效时抛出 TokenException
+    private Long parseRefreshUserId(String refreshToken) {
         try {
-            userId = jwtUtil.parseUserId(refreshToken, JwtUtil.TYPE_REFRESH);
+            return jwtUtil.parseUserId(refreshToken, JwtUtil.TYPE_REFRESH);
         } catch (ExpiredJwtException e) {
-            throw new BusinessException(401, "RefreshToken已过期，请重新登录");
+            throw new TokenException("RefreshToken已过期，请重新登录");
         } catch (JwtException | IllegalArgumentException e) {
-            throw new BusinessException(401, "RefreshToken无效，请重新登录");
+            throw new TokenException("RefreshToken无效，请重新登录");
         }
-
-        // 传入的令牌必须与 Redis 中保存的一致，登出后或被新登录覆盖的旧令牌都会失效
-        String storedRefreshToken = stringRedisTemplate.opsForValue().get(refreshTokenKey(userId));
-        if (!refreshToken.equals(storedRefreshToken)) {
-            throw new BusinessException(401, "RefreshToken无效，请重新登录");
-        }
-
-        return new AccessTokenVO(jwtUtil.generateAccessToken(userId));
     }
 
-    @Override
-    public void logout(Long userId) {
-        stringRedisTemplate.delete(refreshTokenKey(userId));
+    private boolean isLoginLocked(String loginFailKey) {
+        String failCount = stringRedisTemplate.opsForValue().get(loginFailKey);
+        return failCount != null && Long.parseLong(failCount) >= MAX_LOGIN_FAIL_COUNT;
     }
 
-    // 拼接 Redis 中 RefreshToken 的完整键
-    private String refreshTokenKey(Long userId) {
-        return REFRESH_TOKEN_KEY_PREFIX + userId;
+    // 拼接 Redis 中 RefreshToken 的完整键，按用户和设备区分多端登录
+    private String refreshTokenKey(Long userId, String deviceType) {
+        return REFRESH_TOKEN_KEY_PREFIX + userId + ":" + deviceType;
     }
 }

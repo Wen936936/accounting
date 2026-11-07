@@ -15,12 +15,14 @@ public class WebMvcConfig implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        // 拦截所有请求，放行注册、登录、刷新接口（刷新时 AccessToken 已过期），登出接口需鉴权
+        // 拦截所有请求，放行注册、登录、刷新、登出接口（登出仅凭 RefreshToken 操作，不依赖 AccessToken），放行错误页防止死循环
         registry.addInterceptor(jwtInterceptor)
                 .addPathPatterns("/**")
                 .excludePathPatterns(
+                        "/error",
                         "/api/v1/auth/register",
                         "/api/v1/auth/login",
-                        "/api/v1/auth/refresh");
+                        "/api/v1/auth/refresh",
+                        "/api/v1/auth/logout");
     }
 }

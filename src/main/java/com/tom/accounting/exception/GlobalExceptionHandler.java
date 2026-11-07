@@ -1,10 +1,13 @@
 package com.tom.accounting.exception;
 
 import com.tom.accounting.common.Result;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 // 全局异常处理器，统一捕获异常并转换为 Result 格式返回
 @RestControllerAdvice
@@ -14,6 +17,18 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BusinessException.class)
     public Result<Void> handleBusinessException(BusinessException e) {
         return Result.error(e.getCode(), e.getMessage());
+    }
+
+    // 处理请求路径不存在的情况，HTTP 状态码与业务 code 同时返回 404
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<Result<Void>> handleNoResourceFoundException(NoResourceFoundException e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Result.error(404, "接口不存在"));
+    }
+
+    // 处理鉴权异常，HTTP 状态码与业务 code 同时返回 401
+    @ExceptionHandler(TokenException.class)
+    public ResponseEntity<Result<Void>> handleTokenException(TokenException e) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Result.error(401, e.getMessage()));
     }
 
     // 处理 @Valid 参数校验失败，返回第一条校验错误信息

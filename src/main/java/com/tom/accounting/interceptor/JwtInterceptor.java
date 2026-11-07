@@ -8,6 +8,7 @@ import io.jsonwebtoken.JwtException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
@@ -35,6 +36,10 @@ public class JwtInterceptor implements HandlerInterceptor {
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler)
             throws IOException {
+        // CORS 预检请求不携带令牌，必须放行
+        if (HttpMethod.OPTIONS.matches(request.getMethod())) {
+            return true;
+        }
         String authorization = request.getHeader("Authorization");
         // 请求头缺失或不是 Bearer 格式，直接拒绝
         if (authorization == null || !authorization.startsWith(BEARER_PREFIX)) {

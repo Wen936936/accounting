@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
+import java.util.UUID;
 
 // JWT 工具类，负责生成和解析 AccessToken、RefreshToken
 @Component
@@ -50,12 +51,17 @@ public class JwtUtil {
         return generateToken(userId, TYPE_REFRESH, refreshExpirationMs);
     }
 
+    // 获取 AccessToken 有效期，用于计算返回给前端的 expiresIn
+    public long getAccessExpirationMs() {
+        return accessExpirationMs;
+    }
+
     // 获取 RefreshToken 有效期，用于设置 Redis 过期时间
     public long getRefreshExpirationMs() {
         return refreshExpirationMs;
     }
 
-    // 解析令牌并取出用户 id，签名错误、已过期或类型不匹配时抛出 JwtException
+    // 解析令牌并取出用户 id，签名错误、已过期、类型不匹配或缺少用户 id 时抛出 JwtException
     public Long parseUserId(String token, String expectedType) {
         Claims claims = Jwts.parser()
                 .verifyWith(secretKey)
@@ -65,14 +71,19 @@ public class JwtUtil {
         if (!expectedType.equals(claims.get(CLAIM_TYPE))) {
             throw new JwtException("令牌类型不正确");
         }
+        Object userId = claims.get(CLAIM_USER_ID);
+        if (userId == null) {
+            throw new JwtException("令牌缺少用户信息");
+        }
         // JSON 数字可能被解析为 Integer 或 Long，统一转为 Long
-        return ((Number) claims.get(CLAIM_USER_ID)).longValue();
+        return ((Number) userId).longValue();
     }
 
     // 生成令牌，写入用户 id、令牌类型、签发时间和过期时间
     private String generateToken(Long userId, String type, long expirationMs) {
         Date now = new Date();
         return Jwts.builder()
+                .id(UUID.randomUUID().toString())
                 .claim(CLAIM_USER_ID, userId)
                 .claim(CLAIM_TYPE, type)
                 .issuedAt(now)
