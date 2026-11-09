@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>我的账单 - 记账系统</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+    <div class="welcome">欢迎, <strong id="nickname"></strong></div>
+    <button id="logoutBtn" class="btn ghost" type="button">退出登录</button>
+</header>
+
+<main class="container">
+    <section class="card">
+        <h2>新增账单</h2>
+        <form id="billForm" class="bill-form" novalidate>
+            <label>
+                金额
+                <input id="amount" type="number" step="0.01" min="0.01" required>
+            </label>
+            <label>
+                分类ID
+                <input id="categoryId" type="number" min="1" value="1" required>
+            </label>
+            <label>
+                类型
+                <select id="type">
+                    <option value="1">支出</option>
+                    <option value="2">收入</option>
+                </select>
+            </label>
+            <label>
+                日期
+                <input id="billDate" type="date" required>
+            </label>
+            <label class="grow">
+                备注
+                <input id="remark" type="text" maxlength="200" placeholder="选填">
+            </label>
+            <button class="btn primary" type="submit">新增账单</button>
+        </form>
+        <p id="msg" class="msg" hidden></p>
+    </section>
+
+    <section class="card">
+        <div class="table-head">
+            <h2>我的账单</h2>
+            <span id="totalInfo" class="muted"></span>
+        </div>
+        <table>
+            <thead>
+            <tr>
+                <th>日期</th>
+                <th>类型</th>
+                <th class="num">金额</th>
+                <th>备注</th>
+            </tr>
+            </thead>
+            <tbody id="billBody"></tbody>
+        </table>
+        <div class="pager">
+            <button id="prevBtn" class="btn ghost" type="button">上一页</button>
+            <span id="pageInfo" class="muted"></span>
+            <button id="nextBtn" class="btn ghost" type="button">下一页</button>
+        </div>
+    </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
